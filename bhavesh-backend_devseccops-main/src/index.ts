@@ -11,16 +11,26 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Middleware
+// CORS setup
+const allowedOrigins = [
+  process.env.FRONTEND_URL || 'http://localhost:3000'
+];
+
 app.use(cors({
-  origin: [
-    'https://dock-generator-client.vercel.app',
-    'http://localhost:3000'
-  ],
+  origin: function(origin, callback) {
+    // allow requests with no origin (like curl, Postman)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error('Not allowed by CORS'));
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
+
+// Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -53,7 +63,7 @@ app.use(errorHandler);
 app.listen(PORT, () => {
   console.log(`🚀 DockGen AI Backend running on port ${PORT}`);
   console.log(`📊 Health check: http://localhost:${PORT}/health`);
-  console.log(`🔑 CORS enabled for: https://dock-generator-client.vercel.app, http://localhost:3000`);
+  console.log(`🔑 CORS enabled for: ${allowedOrigins.join(', ')}`);
 });
 
 export default app;
