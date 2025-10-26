@@ -16,14 +16,19 @@ const allowedOrigins = [
   process.env.FRONTEND_URL || 'http://localhost:3000'
 ];
 
+// Use CORS middleware
 app.use(cors({
-  origin: function(origin, callback) {
-    // allow requests with no origin (like curl, Postman)
+  origin: (origin, callback) => {
+    // allow requests with no origin (like Postman or curl)
     if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) {
+
+    // allow if origin matches allowed list
+    if (allowedOrigins.some(o => origin.startsWith(o))) {
       return callback(null, true);
     }
-    return callback(new Error('Not allowed by CORS'));
+
+    // reject other origins
+    callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -36,9 +41,7 @@ app.use(express.urlencoded({ extended: true }));
 
 // Connect to MongoDB
 mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/dockgen')
-  .then(() => {
-    console.log('✅ Connected to MongoDB');
-  })
+  .then(() => console.log('✅ Connected to MongoDB'))
   .catch((error) => {
     console.error('❌ MongoDB connection error:', error);
     process.exit(1);
