@@ -11,37 +11,24 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// CORS setup
-const allowedOrigins = [
-  process.env.FRONTEND_URL || 'http://localhost:3000'
-];
-
-// Use CORS middleware
+// Middleware
 app.use(cors({
-  origin: (origin, callback) => {
-    // allow requests with no origin (like Postman or curl)
-    if (!origin) return callback(null, true);
-
-    // allow if origin matches allowed list
-    if (allowedOrigins.some(o => origin.startsWith(o))) {
-      return callback(null, true);
-    }
-
-    // reject other origins
-    callback(new Error('Not allowed by CORS'));
-  },
+  origin: [
+    'https://dev-ops-docker-frontend-new.onrender.com',
+    'http://localhost:3000'
+  ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
-
-// Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // Connect to MongoDB
 mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/dockgen')
-  .then(() => console.log('✅ Connected to MongoDB'))
+  .then(() => {
+    console.log('✅ Connected to MongoDB');
+  })
   .catch((error) => {
     console.error('❌ MongoDB connection error:', error);
     process.exit(1);
@@ -66,7 +53,8 @@ app.use(errorHandler);
 app.listen(PORT, () => {
   console.log(`🚀 DockGen AI Backend running on port ${PORT}`);
   console.log(`📊 Health check: http://localhost:${PORT}/health`);
-  console.log(`🔑 CORS enabled for: ${allowedOrigins.join(', ')}`);
+  console.log(`🔑 CORS enabled for: https://dock-generator-client.vercel.app, http://localhost:3000`);
+  console.log(`🔑 CORS enabled for: https://dev-ops-docker-frontend-new.onrender.com/, http://localhost:3000`);
 });
 
 export default app;
