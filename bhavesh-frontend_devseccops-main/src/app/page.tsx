@@ -7,24 +7,16 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import {
-  Github,
-  Container,
-  Loader2,
-  CheckCircle,
-  AlertCircle,
-  Copy,
-  Download,
-  GitCommit,
-} from "lucide-react";
-import { apiClient } from "@/lib/api";
+import { Github, Container, Loader2, CheckCircle, AlertCircle, Copy, Download, GitCommit } from "lucide-react";
+import { apiClient, GenerationStatus } from "@/lib/api";
 
 interface GenerationResult {
   dockerfile: string;
   techStack: string[];
-  buildStatus: "pending" | "building" | "success" | "error";
+  buildStatus: 'pending' | 'building' | 'success' | 'error';
   error?: string;
 }
+
 
 export default function Home() {
   const [githubUrl, setGithubUrl] = useState("");
@@ -36,6 +28,7 @@ export default function Home() {
   const [isPushing, setIsPushing] = useState(false);
   const [pushSuccess, setPushSuccess] = useState(false);
   const [pollTimeout, setPollTimeout] = useState<NodeJS.Timeout | null>(null);
+  const [isStopping, setIsStopping] = useState(false);
 
   const handleGenerate = async () => {
     if (!githubUrl || !githubToken) {
@@ -43,168 +36,316 @@ export default function Home() {
       return;
     }
 
-    if (pollTimeout) clearTimeout(pollTimeout);
+    // Clear any existing polling
+    if (pollTimeout) {
+      clearTimeout(pollTimeout);
+      setPollTimeout(null);
+    }
+    
     setIsGenerating(true);
+    setIsStopping(false);
     setError("");
     setResult(null);
 
     try {
+      // Check if backend is running
+      // const isHealthy = await apiClient.checkHealth();
+      // if (!isHealthy) {
+      //   setError("Backend server is not running. Please start the backend server on http://localhost:3001");
+      //   setIsGenerating(false);
+      //   return;
+      // }
+
+      // Start the generation process
       const response = await apiClient.generateDockerfile({
         githubUrl,
-        githubToken,
+        githubToken
       });
 
-      const fullGenerationId = response.generationId?.toString() || "";
-      if (!fullGenerationId) {
-        setError("Invalid generation ID received from server");
+      // Ensure we have a valid generation ID
+      const fullGenerationId = response.generationId?.toString() || '';
+      if (!fullGenerationId || fullGenerationId.length < 20) {
+        console.error('Invalid generation ID received:', response.generationId);
+        setError('Invalid generation ID received from server');
         setIsGenerating(false);
         return;
       }
-
+      
       setGenerationId(fullGenerationId);
+      console.log('Full generation ID received:', fullGenerationId);
+      console.log('Generation ID length:', fullGenerationId.length);
+      console.log('Generation ID type:', typeof fullGenerationId);
+      console.log('Generation ID JSON:', JSON.stringify(fullGenerationId));
+      console.log('Generation ID hex:', fullGenerationId.split('').map(c => c.charCodeAt(0).toString(16)).join(''));
 
+      // Poll for status updates
+      let pollCount = 0;
+      const startTime = Date.now();
       const pollStatus = async () => {
         try {
-          const statusResponse = await apiClient.getGenerationStatus(fullGenerationId);
+          pollCount++;
+          const currentGenerationId = fullGenerationId;
+          console.log('Polling with generation ID:', currentGenerationId);
+          console.log('Polling ID length:', currentGenerationId.length);
+          console.log('Polling ID type:', typeof currentGenerationId);
+          console.log('Polling ID JSON:', JSON.stringify(currentGenerationId));
+          console.log('Polling ID starts with:', currentGenerationId.substring(0, 10));
+          console.log('Polling ID hex:', currentGenerationId.split('').map(c => c.charCodeAt(0).toString(16)).join(''));
+          console.log('Polling ID ends with:', currentGenerationId.substring(currentGenerationId.length - 10));
+          const statusResponse = await apiClient.getGenerationStatus(currentGenerationId);
           const generation = statusResponse.generation;
-          setResult({
-            dockerfile: generation.dockerfile,
-            techStack: generation.techStack,
-            buildStatus: generation.buildStatus,
-            error: generation.error,
-          });
+          console.log('Polling status:', generation.buildStatus, 'Poll count:', pollCount, 'Has dockerfile:', !!generation.dockerfile, 'Has error:', !!generation.error);
 
-          if (generation.buildStatus === "building" || generation.buildStatus === "pending") {
+
+          // Update result
+          if (generation.dockerfile || generation.techStack.length > 0) {
+            setResult({
+              dockerfile: generation.dockerfile,
+              techStack: generation.techStack,
+              buildStatus: generation.buildStatus,
+              error: generation.error
+            });
+          }
+
+          // Check for timeout (5 minutes max)
+          const elapsedTime = Date.now() - startTime;
+          const maxTime = 5 * 60 * 1000; // 5 minutes
+          
+          // Stop immediately when Dockerfile is generated (success) or on error
+          const hasDockerfile = !!generation.dockerfile;
+          const hasCompleteResult = (generation.buildStatus === 'success') || 
+                                   (generation.buildStatus === 'error' && generation.error);
+          
+          // Stop as soon as we have a Dockerfile or complete result
+          const shouldStopOnDockerfile = hasDockerfile || hasCompleteResult;
+          
+          // Force stop if we've been polling for more than 2 minutes regardless of status
+          const shouldForceStopByTime = elapsedTime > 120000; // 2 minutes
+          
+          // Continue polling only if we don't have a Dockerfile yet and still building
+          if (!shouldStopOnDockerfile && !shouldForceStopByTime && (generation.buildStatus === 'building' || generation.buildStatus === 'pending') && pollCount < 150 && elapsedTime < maxTime) {
+            const timeout = setTimeout(pollStatus, 2000); // Poll every 2 seconds
+            setPollTimeout(timeout);
+          } else {
+            // Stop polling and reset generating state
+            setIsGenerating(false);
+            setPollTimeout(null);
+            console.log('Generation completed with status:', generation.buildStatus);
+            
+            
+            if (pollCount >= 150) {
+              console.warn('Polling timeout reached, stopping polling');
+            }
+            if (elapsedTime >= maxTime) {
+              console.warn('Maximum time reached, stopping polling');
+            }
+            if (hasCompleteResult) {
+              console.log('Complete result received, stopping polling immediately');
+            }
+            if (shouldStopOnDockerfile) {
+              console.log('Stopping polling - Dockerfile generation completed');
+            }
+            if (shouldForceStopByTime) {
+              console.log('Force stopping polling - Maximum time reached (2 minutes)');
+            }
+          }
+
+        } catch (pollError) {
+          console.error('Error polling status:', pollError);
+          const errorMessage = pollError instanceof Error ? pollError.message : String(pollError);
+          console.error('Poll error details:', {
+            name: pollError instanceof Error ? pollError.name : 'Unknown',
+            message: errorMessage,
+            type: pollError instanceof Error ? pollError.constructor.name : typeof pollError
+          });
+          
+          // Check if it's a connection error
+          if (errorMessage.includes('Failed to fetch') || errorMessage.includes('ERR_CONNECTION_REFUSED')) {
+            console.error('Connection error detected, stopping polling');
+            setIsGenerating(false);
+            setPollTimeout(null);
+            setError('Connection to server lost. Please try again.');
+            return;
+          }
+          
+          // Retry polling after a delay (with timeout protection)
+          const elapsedTime = Date.now() - startTime;
+          const maxTime = 5 * 60 * 1000; // 5 minutes
+          
+          if (pollCount < 150 && elapsedTime < maxTime) {
             const timeout = setTimeout(pollStatus, 2000);
             setPollTimeout(timeout);
           } else {
+            console.warn('Polling timeout reached due to errors, stopping polling');
             setIsGenerating(false);
+            setPollTimeout(null);
           }
-        } catch {
-          setIsGenerating(false);
-          setError("Error fetching generation status.");
         }
       };
 
-      setTimeout(pollStatus, 1000);
+      // Start polling
+      const initialTimeout = setTimeout(pollStatus, 1000);
+      setPollTimeout(initialTimeout);
+
     } catch (err) {
-      setError("Failed to generate Dockerfile. Please try again.");
+      setError(err instanceof Error ? err.message : "Failed to generate Dockerfile. Please try again.");
       setIsGenerating(false);
     }
+  };
+
+  const handleStopGeneration = () => {
+    console.log('Manually stopping generation...');
+    setIsStopping(true);
+    setIsGenerating(false);
+    if (pollTimeout) {
+      clearTimeout(pollTimeout);
+      setPollTimeout(null);
+    }
+    console.log('Generation stopped manually');
   };
 
   const copyToClipboard = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
-    } catch {
-      console.error("Failed to copy");
+      // You could add a toast notification here
+    } catch (err) {
+      console.error('Failed to copy to clipboard:', err);
     }
   };
 
   const downloadDockerfile = () => {
     if (!result?.dockerfile) return;
-    const blob = new Blob([result.dockerfile], { type: "text/plain" });
+    
+    const blob = new Blob([result.dockerfile], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
+    const a = document.createElement('a');
     a.href = url;
-    a.download = "Dockerfile";
+    a.download = 'Dockerfile';
+    document.body.appendChild(a);
     a.click();
+    document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };
 
   const pushDockerfileToRepository = async () => {
     if (!generationId || !result?.dockerfile) return;
+
     setIsPushing(true);
     setPushSuccess(false);
     setError("");
 
     try {
-      await apiClient.pushDockerfileToRepository(generationId, "Add Dockerfile generated by DockGen AI");
+      await apiClient.pushDockerfileToRepository(generationId, 'Add Dockerfile generated by DockGen AI');
       setPushSuccess(true);
-    } catch {
-      setError("Failed to push Dockerfile to repository");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to push Dockerfile to repository");
     } finally {
       setIsPushing(false);
     }
   };
 
+
+  // Cleanup polling timeout on unmount
   useEffect(() => {
     return () => {
-      if (pollTimeout) clearTimeout(pollTimeout);
+      if (pollTimeout) {
+        clearTimeout(pollTimeout);
+      }
     };
   }, [pollTimeout]);
 
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-950 to-gray-900 text-gray-100">
-      <div className="container mx-auto px-4 py-10">
-        {/* Header */}
-        <header className="text-center mb-12">
-          <div className="flex items-center justify-center gap-3 mb-3">
-            <Container className="h-10 w-10 text-indigo-500" />
-            <h1 className="text-4xl font-bold tracking-tight">Docker File Generator</h1>
-          </div>
-          <p className="text-gray-400 max-w-2xl mx-auto">
-            Instantly build and generate Dockerfiles for your GitHub repositories.
-          </p>
-        </header>
 
-        <div className="max-w-3xl mx-auto space-y-8">
-          {/* Input Card */}
-          <Card className="bg-gray-900/60 border border-gray-800 shadow-xl backdrop-blur-md">
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-blue-500 to-indigo-100 dark:from-gray-700 dark:to-gray-800">
+      <div className="container mx-auto px-4 py-8">
+        {/* Header */}
+        <div className="text-center mb-8">
+          <div className="flex items-center justify-center gap-3 mb-4">
+            <Container className="h-8 w-8 text-blue-600" />
+            <h1 className="text-4xl font-bold text-gray-900 dark:text-white">
+              Docker File Generator
+            </h1>
+          </div>
+          <p className="text-lg text-gray-600 dark:text-gray-300">
+            Build your docker image and generate your docker file with Yogesh's docker file generator
+          </p>
+        </div>
+
+        <div className="max-w-4xl mx-auto">
+          {/* Input Form */}
+          <Card className="mb-8">
             <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-indigo-400">
-                <Github className="h-5 w-5" /> GitHub Repository
+              <CardTitle className="flex items-center gap-2">
+                <Github className="h-5 w-5" />
+                GitHub Repository
               </CardTitle>
-              <CardDescription className="text-gray-400">
-                Enter your repository URL and personal access token to begin.
+              <CardDescription>
+                Kindly Enter your GitHub repository URL and Personal Access Token to generate your Docker file
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-5">
+            <CardContent className="space-y-4">
               <div>
-                <label className="text-sm text-gray-300 mb-1 block">Repository URL</label>
+                <label className="block text-sm font-medium mb-2">
+                  GitHub Repository URL
+                </label>
                 <Input
                   type="url"
                   placeholder="https://github.com/username/repository"
                   value={githubUrl}
                   onChange={(e) => setGithubUrl(e.target.value)}
                   disabled={isGenerating}
-                  className="bg-gray-800 border-gray-700 text-gray-100 placeholder:text-gray-500"
                 />
               </div>
               <div>
-                <label className="text-sm text-gray-300 mb-1 block">Personal Access Token</label>
+                <label className="block text-sm font-medium mb-2">
+                  Personal Access Token
+                </label>
                 <Input
                   type="password"
                   placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
                   value={githubToken}
                   onChange={(e) => setGithubToken(e.target.value)}
                   disabled={isGenerating}
-                  className="bg-gray-800 border-gray-700 text-gray-100 placeholder:text-gray-500"
                 />
               </div>
-
-              <Button
-                onClick={handleGenerate}
-                disabled={isGenerating || !githubUrl || !githubToken}
-                className="w-full bg-indigo-600 hover:bg-indigo-700 transition-all duration-300"
-                size="lg"
-              >
-                {isGenerating ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Generating...
-                  </>
-                ) : (
-                  <>
-                    <Container className="mr-2 h-4 w-4" /> Generate Dockerfile
-                  </>
+              <div className="space-y-2">
+                <Button 
+                  onClick={handleGenerate} 
+                  disabled={isGenerating || !githubUrl || !githubToken}
+                  className="w-full"
+                  size="lg"
+                >
+                  {isGenerating ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Generating Dockerfile...
+                    </>
+                  ) : (
+                    <>
+                      <Container className="mr-2 h-4 w-4" />
+                      Generate Dockerfile
+                    </>
+                  )}
+                </Button>
+                {isGenerating && (
+                  <Button 
+                    onClick={handleStopGeneration}
+                    variant="destructive"
+                    className="w-full"
+                    size="sm"
+                  >
+                    Stop Dockerfile Generation
+                  </Button>
                 )}
-              </Button>
+              </div>
             </CardContent>
           </Card>
 
-          {/* Error */}
+
+
+          {/* Error Alert */}
           {error && (
-            <Alert className="bg-red-900/30 border-red-700 text-red-300">
+            <Alert className="mb-8" variant="destructive">
               <AlertCircle className="h-4 w-4" />
               <AlertDescription>{error}</AlertDescription>
             </Alert>
@@ -213,16 +354,18 @@ export default function Home() {
           {/* Results */}
           {result && (
             <div className="space-y-6">
-              <Card className="bg-gray-900/60 border border-gray-800 shadow-lg backdrop-blur-md">
+              {/* Tech Stack Detection */}
+              <Card>
                 <CardHeader>
-                  <CardTitle className="flex items-center gap-2 text-green-400">
-                    <CheckCircle className="h-5 w-5" /> Detected Tech Stack
+                  <CardTitle className="flex items-center gap-2">
+                    <CheckCircle className="h-5 w-5 text-green-500" />
+                    Detected Tech Stack
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
                   <div className="flex flex-wrap gap-2">
                     {result.techStack.map((tech) => (
-                      <Badge key={tech} variant="secondary" className="bg-gray-800 text-gray-200">
+                      <Badge key={tech} variant="secondary">
                         {tech}
                       </Badge>
                     ))}
@@ -230,10 +373,11 @@ export default function Home() {
                 </CardContent>
               </Card>
 
-              <Card className="bg-gray-900/60 border border-gray-800 shadow-lg backdrop-blur-md">
+              {/* Generated Dockerfile */}
+              <Card>
                 <CardHeader>
-                  <CardTitle className="text-indigo-400">Generated Dockerfile</CardTitle>
-                  <CardDescription className="text-gray-400">
+                  <CardTitle>Generated Dockerfile</CardTitle>
+                  <CardDescription>
                     AI-generated Dockerfile optimized for your project
                   </CardDescription>
                 </CardHeader>
@@ -241,50 +385,48 @@ export default function Home() {
                   <Textarea
                     value={result.dockerfile}
                     readOnly
-                    className="min-h-[300px] font-mono bg-gray-800 border-gray-700 text-gray-100"
+                    className="min-h-[300px] font-mono text-sm"
                   />
-                  <div className="mt-4 flex flex-wrap gap-3">
-                    <Button
-                      variant="outline"
+                  <div className="mt-4 flex gap-2">
+                    <Button 
+                      variant="outline" 
                       size="sm"
                       onClick={() => copyToClipboard(result.dockerfile)}
-                      className="bg-gray-800 border border-gray-600 text-gray-100 hover:bg-gray-700 transition-colors"
                     >
-                      <Copy className="mr-2 h-4 w-4" /> Copy
+                      <Copy className="mr-2 h-4 w-4" />
+                      Copy to Clipboard
                     </Button>
-
-                    <Button
-                      variant="outline"
+                    <Button 
+                      variant="outline" 
                       size="sm"
                       onClick={downloadDockerfile}
-                      className="bg-gray-800 border border-gray-600 text-gray-100 hover:bg-gray-700 transition-colors"
                     >
-                      <Download className="mr-2 h-4 w-4" /> Download
+                      <Download className="mr-2 h-4 w-4" />
+                      Download Dockerfile
                     </Button>
-
-                    <Button
-                      variant="default"
+                    <Button 
+                      variant="default" 
                       size="sm"
                       onClick={pushDockerfileToRepository}
                       disabled={isPushing || !generationId}
-                      className="bg-green-600 hover:bg-green-700 text-gray-100 transition-colors disabled:opacity-50"
                     >
                       {isPushing ? (
                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                       ) : (
                         <GitCommit className="mr-2 h-4 w-4" />
                       )}
-                      {isPushing ? "Pushing..." : "Push to Repo"}
+                      {isPushing ? 'Pushing...' : 'Push to Repository'}
                     </Button>
                   </div>
-
                   {pushSuccess && (
-                    <p className="mt-3 text-sm text-green-500">
+                    <div className="mt-2 text-sm text-green-600">
                       ✅ Dockerfile successfully pushed to repository!
-                    </p>
+                    </div>
                   )}
                 </CardContent>
               </Card>
+
+
             </div>
           )}
         </div>
